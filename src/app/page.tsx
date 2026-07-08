@@ -1,9 +1,16 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TEMPLATES, DEFAULT_TEMPLATE_ID, getTemplate, isSceneTemplate } from "@/lib/templates";
 
 type Status = "idle" | "working" | "done" | "error";
+type Quality = "draft" | "standard" | "high";
+
+const QUALITY_OPTIONS: { id: Quality; label: string; hint: string }[] = [
+  { id: "draft", label: "Draft", hint: "fast · ~£0.002" },
+  { id: "standard", label: "Standard", hint: "~£0.04" },
+  { id: "high", label: "High", hint: "best" },
+];
 
 interface CostLine {
   label: string;
@@ -55,6 +62,8 @@ export default function Home() {
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [templateId, setTemplateId] = useState(DEFAULT_TEMPLATE_ID);
   const [artDirection, setArtDirection] = useState("");
+  const [quality, setQuality] = useState<Quality>("standard");
+  const [elapsed, setElapsed] = useState(0);
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
 
@@ -67,6 +76,15 @@ export default function Home() {
 
   const template = useMemo(() => getTemplate(templateId), [templateId]);
   const sceneMode = template ? isSceneTemplate(template) : false;
+
+  // Tick an elapsed counter while generating so a long render doesn't feel hung.
+  useEffect(() => {
+    if (status !== "working") return;
+    setElapsed(0);
+    const started = Date.now();
+    const t = setInterval(() => setElapsed(Math.round((Date.now() - started) / 1000)), 250);
+    return () => clearInterval(t);
+  }, [status]);
   const selected = versions.find((v) => v.versionId === selectedId) ?? null;
   const hasVersions = versions.length > 0;
 
@@ -94,6 +112,7 @@ export default function Home() {
     try {
       const body = new FormData();
       body.append("templateId", templateId);
+      if (sceneMode) body.append("quality", quality);
       if (artDirection.trim()) body.append("prompt", artDirection.trim());
       // Reuse the cached cutout when we have one (regenerate); else upload.
       if (productId) body.append("productId", productId);
@@ -120,7 +139,7 @@ export default function Home() {
       setError(e instanceof Error ? e.message : "Something went wrong.");
       setStatus("error");
     }
-  }, [file, productId, templateId, artDirection]);
+  }, [file, productId, templateId, artDirection, quality, sceneMode]);
 
   const onThumbClick = useCallback(
     (id: string) => {
@@ -142,8 +161,8 @@ export default function Home() {
 
   const primaryLabel = status === "working"
     ? sceneMode
-      ? "Working — generating scene…"
-      : "Working — compositing…"
+      ? `Generating scene… ${elapsed}s`
+      : `Compositing… ${elapsed}s`
     : hasVersions
       ? "Generate variation"
       : "Generate image";
@@ -241,6 +260,31 @@ export default function Home() {
             placeholder="e.g. warmer morning light, a few eucalyptus leaves to the side"
             className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-neutral-400"
           />
+
+          {/* Quality tier */}
+          <div className="mt-3">
+            <span className="mb-1 block text-sm font-medium text-neutral-700">Quality</span>
+            <div className="grid grid-cols-3 gap-2">
+              {QUALITY_OPTIONS.map((q) => {
+                const active = q.id === quality;
+                return (
+                  <button
+                    key={q.id}
+                    type="button"
+                    onClick={() => setQuality(q.id)}
+                    className={`rounded-lg border px-2 py-2 text-center transition ${
+                      active
+                        ? "border-neutral-900 ring-1 ring-neutral-900"
+                        : "border-neutral-200 hover:border-neutral-300"
+                    }`}
+                  >
+                    <span className="block text-sm font-medium">{q.label}</span>
+                    <span className="block text-[10px] text-neutral-400">{q.hint}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </section>
       )}
 
@@ -253,6 +297,13 @@ export default function Home() {
       >
         {primaryLabel}
       </button>
+      {status === "working" && sceneMode && (
+        <p className="mt-2 text-center text-[11px] text-neutral-400">
+          {quality === "draft"
+            ? "Draft scenes take a few seconds…"
+            : "Studio scenes take ~30–60s — worth the wait."}
+        </p>
+      )}
       {hasVersions && status !== "working" && (
         <p className="mt-2 text-center text-[11px] text-neutral-400">
           Same locked product, new scene — change the background or art direction for a different look.

@@ -15,7 +15,16 @@ export const maxDuration = 120;
 
 const MAX_BYTES = 25 * 1024 * 1024; // 25 MB phone photo ceiling
 const SCENE_SIZE = process.env.SCENE_SIZE ?? "1024x1024";
-const SCENE_QUALITY = process.env.SCENE_QUALITY ?? "medium";
+
+// Quality tiers the shop owner picks. Draft is fast + cheap for iterating;
+// Standard/High use the flagship for final renders. Model choice is per-tier so
+// the cost meter reflects the real trade-off.
+const QUALITY_TIERS: Record<string, { model: string; quality: string }> = {
+  draft: { model: "gpt-image-1-mini", quality: "low" },
+  standard: { model: "gpt-image-2", quality: "medium" },
+  high: { model: "gpt-image-2", quality: "high" },
+};
+const DEFAULT_TIER = "standard";
 
 /**
  * generate endpoint. Isolate the product (or reuse the product's stored cutout
@@ -32,6 +41,7 @@ export async function POST(req: NextRequest) {
     const templateId = String(form.get("templateId") ?? "");
     const artDirection = String(form.get("prompt") ?? "").trim();
     const requestedProductId = String(form.get("productId") ?? "");
+    const tier = QUALITY_TIERS[String(form.get("quality") ?? "")] ?? QUALITY_TIERS[DEFAULT_TIER];
 
     const template = getTemplate(templateId);
     if (!template) {
@@ -92,7 +102,7 @@ export async function POST(req: NextRequest) {
     // Generate the scene (Studio mode) if this template calls for one.
     let scene: GeneratedScene | undefined;
     if (isSceneTemplate(template)) {
-      const scenegen = getSceneGenerator();
+      const scenegen = getSceneGenerator(tier.model);
       if (!scenegen) {
         return NextResponse.json(
           { error: "Scene generation is not configured (missing OPENAI_API_KEY)." },
@@ -100,7 +110,7 @@ export async function POST(req: NextRequest) {
         );
       }
       const { prompt } = buildScenePrompt(template, artDirection);
-      scene = await scenegen.generate({ prompt, size: SCENE_SIZE, quality: SCENE_QUALITY });
+      scene = await scenegen.generate({ prompt, size: SCENE_SIZE, quality: tier.quality });
     }
 
     const final = await composite(cutout, template, scene?.png);

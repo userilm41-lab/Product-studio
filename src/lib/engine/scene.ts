@@ -55,9 +55,10 @@ export class OpenAISceneGenerator implements SceneGenerator {
   }
 }
 
-/** Returns a configured scene generator, or null if no API key is set. */
-export function getSceneGenerator(): SceneGenerator | null {
+/** Returns a configured scene generator (optionally for a specific model),
+ *  or null if no API key is set. */
+export function getSceneGenerator(model?: string): SceneGenerator | null {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return null;
-  return new OpenAISceneGenerator({ apiKey });
+  return new OpenAISceneGenerator({ apiKey, model });
 }
