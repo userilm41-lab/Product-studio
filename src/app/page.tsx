@@ -5,10 +5,28 @@ import { TEMPLATES, DEFAULT_TEMPLATE_ID, getTemplate, isSceneTemplate } from "@/
 
 type Status = "idle" | "working" | "done" | "error";
 
-interface ResultMeta {
-  model: string | null;
-  outputImageTokens: number | null;
-  elapsedMs: number | null;
+interface CostLine {
+  label: string;
+  usd: number;
+  detail?: string;
+}
+interface Cost {
+  totalUsd: number;
+  totalGbpPence: number;
+  lines: CostLine[];
+  ratesAsOf: string;
+  fxGbpPerUsd: number;
+}
+interface GenerateResponse {
+  image: string;
+  filename: string;
+  cost: Cost;
+  meta: { mode: string; model: string | null; elapsedMs: number };
+}
+
+function gbp(usd: number, fx: number): string {
+  const value = usd * fx;
+  return value >= 1 ? `£${value.toFixed(2)}` : `£${value.toFixed(3)}`;
 }
 
 export default function Home() {
@@ -17,9 +35,8 @@ export default function Home() {
   const [templateId, setTemplateId] = useState(DEFAULT_TEMPLATE_ID);
   const [artDirection, setArtDirection] = useState("");
   const [status, setStatus] = useState<Status>("idle");
-  const [resultUrl, setResultUrl] = useState<string | null>(null);
+  const [result, setResult] = useState<GenerateResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [meta, setMeta] = useState<ResultMeta | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const template = useMemo(() => getTemplate(templateId), [templateId]);
@@ -32,10 +49,9 @@ export default function Home() {
       if (prev) URL.revokeObjectURL(prev);
       return URL.createObjectURL(f);
     });
-    setResultUrl(null);
+    setResult(null);
     setStatus("idle");
     setError(null);
-    setMeta(null);
   }, []);
 
   const generate = useCallback(async () => {
@@ -49,20 +65,9 @@ export default function Home() {
       if (artDirection.trim()) body.append("prompt", artDirection.trim());
 
       const res = await fetch("/api/generate", { method: "POST", body });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error ?? `Request failed (${res.status})`);
-      }
-      setMeta({
-        model: res.headers.get("X-Scene-Model"),
-        outputImageTokens: Number(res.headers.get("X-Output-Image-Tokens")) || null,
-        elapsedMs: Number(res.headers.get("X-Generation-Ms")) || null,
-      });
-      const blob = await res.blob();
-      setResultUrl((prev) => {
-        if (prev) URL.revokeObjectURL(prev);
-        return URL.createObjectURL(blob);
-      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
+      setResult(data as GenerateResponse);
       setStatus("done");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
@@ -183,7 +188,7 @@ export default function Home() {
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
 
       {/* Result */}
-      {resultUrl && status === "done" && (
+      {result && status === "done" && (
         <section className="mt-8">
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-sm font-medium text-neutral-700">Result</h2>
@@ -201,23 +206,51 @@ export default function Home() {
             }}
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={resultUrl} alt="Generated product image" className="w-full" />
+            <img src={result.image} alt="Generated product image" className="w-full" />
           </div>
+
+          {/* Cost (Plan §4: true unit cost, no margin, expandable breakdown) */}
+          <div className="mt-3 rounded-lg border border-neutral-200 bg-white p-3">
+            <div className="flex items-baseline justify-between">
+              <span className="text-sm text-neutral-600">This image cost</span>
+              <span className="text-base font-semibold">
+                {gbp(result.cost.totalUsd, result.cost.fxGbpPerUsd)}
+              </span>
+            </div>
+            <details className="mt-2">
+              <summary className="cursor-pointer text-xs text-neutral-500">Breakdown</summary>
+              <ul className="mt-2 space-y-1">
+                {result.cost.lines.map((l, i) => (
+                  <li key={i} className="flex items-baseline justify-between text-xs">
+                    <span className="text-neutral-600">
+                      {l.label}
+                      {l.detail && <span className="text-neutral-400"> · {l.detail}</span>}
+                    </span>
+                    <span className="tabular-nums text-neutral-700">
+                      {gbp(l.usd, result.cost.fxGbpPerUsd)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-[10px] leading-tight text-neutral-400">
+                No margin. Priced from model usage; rates as of {result.cost.ratesAsOf}. GBP shown
+                at {result.cost.fxGbpPerUsd}/USD (display only). ${result.cost.totalUsd.toFixed(4)}.
+              </p>
+            </details>
+          </div>
+
           <div className="mt-3 flex items-center justify-between">
             <a
-              href={resultUrl}
-              download="cadence-studio.png"
+              href={result.image}
+              download={result.filename}
               className="rounded-lg bg-neutral-900 px-4 py-2 text-sm font-semibold text-white"
             >
               Download PNG
             </a>
-            {meta && (
-              <span className="text-right text-xs text-neutral-400">
-                {meta.model && <span>{meta.model}</span>}
-                {meta.outputImageTokens != null && <span> · {meta.outputImageTokens} img tok</span>}
-                {meta.elapsedMs != null && <span> · {(meta.elapsedMs / 1000).toFixed(1)}s</span>}
-              </span>
-            )}
+            <span className="text-right text-xs text-neutral-400">
+              {result.meta.model && <span>{result.meta.model} · </span>}
+              {(result.meta.elapsedMs / 1000).toFixed(1)}s
+            </span>
           </div>
         </section>
       )}

@@ -4,7 +4,15 @@ B2B AI product-image tool. A shop owner shoots a product on their phone; we
 return a clean, catalog-ready image. **The product itself never changes** —
 its original pixels are composited onto the new background by construction.
 
-## Status: M2 — Studio-mode scene generation
+## Status: M3 — Transparent cost metering
+
+Every generation reports its **true, margin-free cost**, computed from the
+model's reported token usage against a versioned rates config
+(`src/lib/pricing/`) — never a hardcoded per-image number. The UI shows
+"This image cost £X" with an expandable per-step breakdown. Static templates
+cost ~£0 (local only); a `gpt-image-2` medium scene ≈ £0.04.
+
+## Earlier: M2 — Studio-mode scene generation
 
 Two paths, both preserving the product by construction:
 
