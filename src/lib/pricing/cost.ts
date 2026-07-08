@@ -24,7 +24,7 @@ export interface CostBreakdown {
   fxGbpPerUsd: number;
 }
 
-function priceSceneUsd(model: string, usage: ImageUsage): { usd: number; detail: string } {
+function priceImageUsd(model: string, usage: ImageUsage): { usd: number; detail: string } {
   const rates = getModelRates(model);
   if (!rates) {
     return { usd: 0, detail: `no rates for ${model} — verify pricing config` };
@@ -39,8 +39,8 @@ function priceSceneUsd(model: string, usage: ImageUsage): { usd: number; detail:
 }
 
 export interface CostInputs {
-  /** Present for Studio mode; absent for static templates. */
-  scene?: { model: string; usage: ImageUsage };
+  /** Image-model calls this generation made (AI render and/or scene). */
+  images?: { label: string; model: string; usage: ImageUsage }[];
   /** Wall-clock seconds of local processing (segmentation + composite). */
   computeSeconds: number;
   /** True if an LLM was used to orchestrate the prompt (none yet). */
@@ -50,9 +50,9 @@ export interface CostInputs {
 export function computeCost(inputs: CostInputs): CostBreakdown {
   const lines: CostLine[] = [];
 
-  if (inputs.scene) {
-    const { usd, detail } = priceSceneUsd(inputs.scene.model, inputs.scene.usage);
-    lines.push({ label: "Scene generation", usd, detail });
+  for (const call of inputs.images ?? []) {
+    const { usd, detail } = priceImageUsd(call.model, call.usage);
+    lines.push({ label: call.label, usd, detail });
   }
 
   // Prompt orchestration is rule-based for now — no model call, no cost.

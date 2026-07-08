@@ -1,6 +1,7 @@
-import type { GeneratedScene, SceneGenerator, SceneRequest } from "./types";
+import type { GeneratedScene, ProductRenderRequest, SceneGenerator, SceneRequest } from "./types";
 
 const OPENAI_IMAGES_URL = "https://api.openai.com/v1/images/generations";
+const OPENAI_EDITS_URL = "https://api.openai.com/v1/images/edits";
 
 /**
  * Scene engine backed by OpenAI GPT Image. It generates the *background scene
@@ -37,9 +38,63 @@ export class OpenAISceneGenerator implements SceneGenerator {
       throw new Error(`Scene generation failed (${res.status}): ${detail.slice(0, 300)}`);
     }
 
-    const json = await res.json();
+    return this.parseImageResponse(await res.json());
+  }
+
+  /**
+   * images/edits at high input fidelity: the model re-photographs the product
+   * from the original photo per the prompt. One call handles isolation +
+   * background + lighting/shadows — no local matte, no paste seams.
+   */
+  async render(req: ProductRenderRequest): Promise<GeneratedScene> {
+    const call = (withFidelity: boolean) => {
+      const form = new FormData();
+      form.append("model", this.model);
+      form.append("prompt", req.prompt);
+      form.append("size", req.size);
+      form.append("quality", req.quality);
+      // Preserves fine product detail (labels, artwork, texture) in edits.
+      if (withFidelity) form.append("input_fidelity", "high");
+      const ext = req.mime === "image/jpeg" ? "jpg" : "png";
+      form.append(
+        "image",
+        new Blob([Uint8Array.from(req.image)], { type: req.mime || "image/png" }),
+        `product.${ext}`,
+      );
+      return fetch(OPENAI_EDITS_URL, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${this.apiKey}` },
+        body: form,
+      });
+    };
+
+    let res = await call(true);
+    if (res.status === 400) {
+      // Some tiers (e.g. -mini) may not accept input_fidelity — retry without.
+      const detail = await res.text().catch(() => "");
+      if (!detail.includes("input_fidelity")) {
+        throw new Error(`AI render failed (400): ${detail.slice(0, 300)}`);
+      }
+      res = await call(false);
+    }
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      throw new Error(`AI render failed (${res.status}): ${detail.slice(0, 300)}`);
+    }
+    return this.parseImageResponse(await res.json());
+  }
+
+  private parseImageResponse(json: {
+    data?: { b64_json?: string }[];
+    usage?: {
+      input_tokens_details?: { text_tokens?: number; image_tokens?: number };
+      output_tokens_details?: { image_tokens?: number };
+      output_tokens?: number;
+      total_tokens?: number;
+    };
+  }): GeneratedScene {
     const b64 = json?.data?.[0]?.b64_json;
-    if (!b64) throw new Error("Scene generation returned no image.");
+    if (!b64) throw new Error("Image model returned no image.");
 
     const u = json.usage ?? {};
     return {

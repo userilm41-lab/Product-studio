@@ -40,6 +40,13 @@ export interface SceneRequest {
   quality: string;
 }
 
+/** An image-to-image render: the model re-photographs the product per prompt. */
+export interface ProductRenderRequest extends SceneRequest {
+  /** The source photo containing the product (original upload, not a matte). */
+  image: Buffer;
+  mime: string;
+}
+
 /**
  * Generates the *scene* (background) only — never the product. Studio mode
  * composites the original product cutout on top, so whichever model paints the
@@ -48,4 +55,11 @@ export interface SceneRequest {
 export interface SceneGenerator {
   readonly model: string;
   generate(req: SceneRequest): Promise<GeneratedScene>;
+  /**
+   * AI finish: one edits-API call renders product + background together at
+   * high input fidelity — clean edges, integrated lighting/shadows (what the
+   * ChatGPT UI does). Trades the pixel-exact guarantee for photographic
+   * quality; the "instant" composite path remains the exact fallback.
+   */
+  render(req: ProductRenderRequest): Promise<GeneratedScene>;
 }
