@@ -9,4 +9,3 @@ storage/
 *.db
 *.db-journal
 prisma/dev.db*
- 
