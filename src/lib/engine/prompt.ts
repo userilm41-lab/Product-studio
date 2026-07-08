@@ -40,11 +40,17 @@ export function buildScenePrompt(template: Template, artDirection?: string): Sce
  * non-negotiables flip: instead of "paint no product", we demand the product
  * be preserved exactly while everything around it is replaced.
  */
+// "Truthful but flattering": looks come first, honesty is the hard line. The
+// model may retouch like a product photographer would, but must not change
+// what the buyer would actually receive.
 const PRODUCT_PRESERVE_GUARD =
-  "Keep the product from the photo EXACTLY as it is — identical shape, proportions, colors, " +
-  "materials, buttons, artwork, labels and text. Do not restyle, redesign, clean up, or replace " +
-  "the product. Do not add any other objects, text, watermarks or logos. Remove the original " +
-  "background, surface and any straps/clutter around the product completely.";
+  "The product must remain truthfully the same item a buyer would receive: same design, shape, " +
+  "proportions, colors, materials, buttons, artwork, labels and text. Light professional " +
+  "retouching is encouraged — even out glare, remove dust, fingerprints and minor scuffs, make " +
+  "it look its best. But do not redesign it, add features or decorations it does not have, hide " +
+  "significant wear or damage, or make it look like a different or higher-end product. Do not " +
+  "add any text, watermarks or logos. Completely remove the original background, surface and " +
+  "any surrounding clutter that is not part of the product.";
 
 /** How the product should sit, phrased per template anchor. */
 function placement(template: Template): string {
