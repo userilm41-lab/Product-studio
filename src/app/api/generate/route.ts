@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import { segmenter } from "@/lib/engine/segment";
 import { composite } from "@/lib/engine/composite";
 import { getSceneGenerator } from "@/lib/engine/scene";
 import { buildScenePrompt } from "@/lib/engine/prompt";
+import { getCutout, putCutout } from "@/lib/engine/cutout-cache";
 import { getTemplate, isSceneTemplate } from "@/lib/templates";
 import { computeCost } from "@/lib/pricing/cost";
 import type { GeneratedScene } from "@/lib/engine/types";
@@ -15,9 +17,11 @@ const SCENE_SIZE = process.env.SCENE_SIZE ?? "1024x1024";
 const SCENE_QUALITY = process.env.SCENE_QUALITY ?? "medium";
 
 /**
- * generate endpoint. Isolate the product, optionally generate a scene, then
- * composite the original product onto the background. Returns the final image
- * plus the TRUE, margin-free cost of the generation (Plan §4).
+ * generate endpoint. Isolate the product (or reuse a cached cutout on
+ * regenerate), optionally generate a scene, then composite the original
+ * product onto the background. Returns the final image, its true margin-free
+ * cost (Plan §4), and a productId so subsequent regenerations skip
+ * segmentation and can't drift the product (Plan §3).
  * Synchronous for now; M6 moves this behind an async job queue.
  */
 export async function POST(req: NextRequest) {
@@ -26,16 +30,7 @@ export async function POST(req: NextRequest) {
     const file = form.get("image");
     const templateId = String(form.get("templateId") ?? "");
     const artDirection = String(form.get("prompt") ?? "");
-
-    if (!(file instanceof File)) {
-      return NextResponse.json({ error: "No image uploaded." }, { status: 400 });
-    }
-    if (!file.type.startsWith("image/")) {
-      return NextResponse.json({ error: "File must be an image." }, { status: 400 });
-    }
-    if (file.size > MAX_BYTES) {
-      return NextResponse.json({ error: "Image is too large (max 25 MB)." }, { status: 413 });
-    }
+    const requestedProductId = String(form.get("productId") ?? "");
 
     const template = getTemplate(templateId);
     if (!template) {
@@ -43,8 +38,30 @@ export async function POST(req: NextRequest) {
     }
 
     const started = Date.now();
-    const input = Buffer.from(await file.arrayBuffer());
-    const { png: cutout } = await segmenter.segment(input, file.type);
+
+    // Reuse the cached cutout on regenerate; otherwise segment a fresh upload.
+    let cutout: Buffer | undefined =
+      requestedProductId ? getCutout(requestedProductId) : undefined;
+    let productId = cutout ? requestedProductId : "";
+    let reusedCutout = Boolean(cutout);
+
+    if (!cutout) {
+      if (!(file instanceof File)) {
+        return NextResponse.json(
+          { error: "No image uploaded (and no cached product to regenerate)." },
+          { status: 400 },
+        );
+      }
+      if (!file.type.startsWith("image/")) {
+        return NextResponse.json({ error: "File must be an image." }, { status: 400 });
+      }
+      if (file.size > MAX_BYTES) {
+        return NextResponse.json({ error: "Image is too large (max 25 MB)." }, { status: 413 });
+      }
+      const input = Buffer.from(await file.arrayBuffer());
+      cutout = (await segmenter.segment(input, file.type)).png;
+      productId = putCutout(cutout);
+    }
 
     let scene: GeneratedScene | undefined;
     if (isSceneTemplate(template)) {
@@ -70,11 +87,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       image: `data:image/png;base64,${final.toString("base64")}`,
       filename: `cadence-${template.id}.png`,
+      productId,
+      versionId: randomUUID(),
+      createdAt: new Date().toISOString(),
       cost,
       meta: {
         mode: scene ? "studio" : "static",
         model: scene?.model ?? null,
         elapsedMs,
+        reusedCutout,
+        templateId: template.id,
+        templateName: template.name,
+        artDirection: artDirection.trim() || null,
       },
     });
   } catch (err) {

@@ -4,7 +4,15 @@ B2B AI product-image tool. A shop owner shoots a product on their phone; we
 return a clean, catalog-ready image. **The product itself never changes** —
 its original pixels are composited onto the new background by construction.
 
-## Status: M3 — Transparent cost metering
+## Status: M4 — Regenerate + version history
+
+The product is segmented once and the cutout cached by `productId`; regenerate
+re-runs only the scene, so it's ~7× faster (skips segmentation) and the product
+is byte-identical across versions — it provably cannot drift. The UI keeps a
+version filmstrip (thumbnail, template, cost, time) with select, download, and
+side-by-side compare. Cache is in-memory for now; moves to object storage in M6.
+
+## Earlier: M3 — Transparent cost metering
 
 Every generation reports its **true, margin-free cost**, computed from the
 model's reported token usage against a versioned rates config
