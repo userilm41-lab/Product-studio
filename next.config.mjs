@@ -7,7 +7,7 @@ const nextConfig = {
   outputFileTracingRoot: import.meta.dirname,
   // sharp and the ONNX-backed background remover are heavy native/CJS deps;
   // keep them out of the bundler and load them at runtime on the Node server.
-  serverExternalPackages: ["sharp", "@imgly/background-removal-node"],
+  serverExternalPackages: ["sharp", "@imgly/background-removal-node", "@prisma/client"],
   // Resolve the "@/*" alias explicitly — the tsconfig-paths pickup is flaky
   // under the installed TypeScript toolchain.
   webpack: (config) => {

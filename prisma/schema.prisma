@@ -1,0 +1,70 @@
+// Cadence Studio data model (M6).
+// SQLite locally; swap `provider`/`url` to Postgres in production — the schema
+// and app code are unchanged. Multi-tenant-ready: everything hangs off Shop.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Shop {
+  id        String    @id @default(cuid())
+  name      String
+  createdAt DateTime  @default(now())
+  users     User[]
+  products  Product[]
+}
+
+model User {
+  id        String   @id @default(cuid())
+  shopId    String
+  shop      Shop     @relation(fields: [shopId], references: [id])
+  email     String   @unique
+  role      String   @default("owner") // owner | staff
+  createdAt DateTime @default(now())
+}
+
+model Product {
+  id          String       @id @default(cuid())
+  shopId      String
+  shop        Shop         @relation(fields: [shopId], references: [id])
+  name        String       @default("Untitled product")
+  createdAt   DateTime     @default(now())
+  assets      Asset[]
+  generations Generation[]
+}
+
+model Asset {
+  id         String   @id @default(cuid())
+  productId  String?
+  product    Product? @relation(fields: [productId], references: [id])
+  role       String // upload | cutout | scene | final
+  storageKey String
+  mime       String   @default("image/png")
+  createdAt  DateTime @default(now())
+
+  finalOf Generation[] @relation("finalAsset")
+}
+
+model Generation {
+  id           String   @id @default(cuid())
+  productId    String
+  product      Product  @relation(fields: [productId], references: [id])
+  templateId   String
+  templateName String
+  prompt       String?
+  mode         String // studio | static
+  model        String?
+  costPennies  Int      @default(0)
+  costUsd      Float    @default(0)
+  elapsedMs    Int      @default(0)
+  reusedCutout Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  finalAssetId String?
+  finalAsset   Asset?  @relation("finalAsset", fields: [finalAssetId], references: [id])
+}

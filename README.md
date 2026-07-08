@@ -4,7 +4,25 @@ B2B AI product-image tool. A shop owner shoots a product on their phone; we
 return a clean, catalog-ready image. **The product itself never changes** —
 its original pixels are composited onto the new background by construction.
 
-## Status: M5 (in progress) — Grounding shadow
+## Status: M6 (in progress) — Persistence foundation
+
+Generations are now durable. Postgres (Prisma) stores `Shop / User / Product /
+Asset / Generation` (multi-tenant-ready; every generation records
+`cost_pennies`). Images live in S3 behind a `Storage` interface, prefix-scoped
+(`cadence-studio/`) in a shared bucket. The product is segmented once and its
+cutout stored, so regenerate reuses it **across restarts** — proven durable.
+
+- `prisma/schema.prisma` — Postgres data model (SQLite/local fallback for dev).
+- `src/lib/db.ts`, `src/lib/storage.ts` (S3 + local), `src/lib/tenant.ts`.
+- `GET /api/versions?productId=` — durable version history.
+- `GET /api/asset/:id` — serves stored bytes (key from DB, no traversal surface).
+
+Config (in `.env.local`): `DATABASE_URL`, `AWS_*`, `AWS_S3_BUCKET`, `S3_PREFIX`.
+
+Still open in M6: brand kit, batch across SKUs, marketplace export presets,
+push-to-listing, and hydrating version history into the UI.
+
+## Earlier: M5 (partial) — Grounding shadow
 
 Floor-anchored scenes now get a soft contact shadow under the product so it
 sits on the surface instead of floating (drawn on the background, beneath the

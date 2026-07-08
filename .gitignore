@@ -5,3 +5,7 @@ next-env.d.ts
 *.log
 .DS_Store
 .env*.local
+storage/
+*.db
+*.db-journal
+prisma/dev.db*
