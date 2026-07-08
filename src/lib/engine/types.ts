@@ -13,3 +13,39 @@ export interface SegmentedProduct {
 export interface Segmenter {
   segment(input: Buffer, mimeType: string): Promise<SegmentedProduct>;
 }
+
+/**
+ * Token usage for one image-model call, normalised across providers so the M3
+ * cost meter can price it from a rates table (no hardcoded per-image number).
+ */
+export interface ImageUsage {
+  inputTextTokens: number;
+  inputImageTokens: number;
+  outputImageTokens: number;
+  totalTokens: number;
+}
+
+export interface GeneratedScene {
+  /** RGB PNG of the empty scene (no product — the product is composited on). */
+  png: Buffer;
+  model: string;
+  usage: ImageUsage;
+}
+
+export interface SceneRequest {
+  prompt: string;
+  /** e.g. "1024x1024" — provider-native size. */
+  size: string;
+  /** e.g. "low" | "medium" | "high". */
+  quality: string;
+}
+
+/**
+ * Generates the *scene* (background) only — never the product. Studio mode
+ * composites the original product cutout on top, so whichever model paints the
+ * scene, the product is guaranteed.
+ */
+export interface SceneGenerator {
+  readonly model: string;
+  generate(req: SceneRequest): Promise<GeneratedScene>;
+}

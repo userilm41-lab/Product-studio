@@ -1,19 +1,29 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
-import { TEMPLATES, DEFAULT_TEMPLATE_ID } from "@/lib/templates";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { TEMPLATES, DEFAULT_TEMPLATE_ID, getTemplate, isSceneTemplate } from "@/lib/templates";
 
 type Status = "idle" | "working" | "done" | "error";
+
+interface ResultMeta {
+  model: string | null;
+  outputImageTokens: number | null;
+  elapsedMs: number | null;
+}
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [templateId, setTemplateId] = useState(DEFAULT_TEMPLATE_ID);
+  const [artDirection, setArtDirection] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [elapsedMs, setElapsedMs] = useState<number | null>(null);
+  const [meta, setMeta] = useState<ResultMeta | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const template = useMemo(() => getTemplate(templateId), [templateId]);
+  const sceneMode = template ? isSceneTemplate(template) : false;
 
   const pickFile = useCallback((f: File | null) => {
     if (!f) return;
@@ -25,7 +35,7 @@ export default function Home() {
     setResultUrl(null);
     setStatus("idle");
     setError(null);
-    setElapsedMs(null);
+    setMeta(null);
   }, []);
 
   const generate = useCallback(async () => {
@@ -36,12 +46,18 @@ export default function Home() {
       const body = new FormData();
       body.append("image", file);
       body.append("templateId", templateId);
+      if (artDirection.trim()) body.append("prompt", artDirection.trim());
+
       const res = await fetch("/api/generate", { method: "POST", body });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error ?? `Request failed (${res.status})`);
       }
-      setElapsedMs(Number(res.headers.get("X-Generation-Ms")) || null);
+      setMeta({
+        model: res.headers.get("X-Scene-Model"),
+        outputImageTokens: Number(res.headers.get("X-Output-Image-Tokens")) || null,
+        elapsedMs: Number(res.headers.get("X-Generation-Ms")) || null,
+      });
       const blob = await res.blob();
       setResultUrl((prev) => {
         if (prev) URL.revokeObjectURL(prev);
@@ -52,7 +68,11 @@ export default function Home() {
       setError(e instanceof Error ? e.message : "Something went wrong.");
       setStatus("error");
     }
-  }, [file, templateId]);
+  }, [file, templateId, artDirection]);
+
+  const workingLabel = sceneMode
+    ? "Working — isolating & generating scene…"
+    : "Working — isolating & compositing…";
 
   return (
     <main className="mx-auto max-w-xl px-4 py-8">
@@ -101,22 +121,28 @@ export default function Home() {
       </section>
 
       {/* Step 2: template */}
-      <section className="mb-6">
+      <section className="mb-4">
         <h2 className="mb-2 text-sm font-medium text-neutral-700">Background</h2>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
           {TEMPLATES.map((t) => {
             const active = t.id === templateId;
+            const scene = isSceneTemplate(t);
             return (
               <button
                 key={t.id}
                 type="button"
                 onClick={() => setTemplateId(t.id)}
-                className={`rounded-lg border p-3 text-left transition ${
+                className={`relative rounded-lg border p-3 text-left transition ${
                   active
                     ? "border-neutral-900 ring-1 ring-neutral-900"
                     : "border-neutral-200 hover:border-neutral-300"
                 }`}
               >
+                {scene && (
+                  <span className="absolute right-2 top-2 rounded-full bg-violet-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-violet-700">
+                    AI
+                  </span>
+                )}
                 <span className="block text-sm font-medium">{t.name}</span>
                 <span className="mt-0.5 block text-[11px] leading-tight text-neutral-500">
                   {t.description}
@@ -127,6 +153,23 @@ export default function Home() {
         </div>
       </section>
 
+      {/* Step 2b: art direction (scene templates only) */}
+      {sceneMode && (
+        <section className="mb-6">
+          <label htmlFor="art" className="mb-1 block text-sm font-medium text-neutral-700">
+            Art direction <span className="font-normal text-neutral-400">(optional)</span>
+          </label>
+          <input
+            id="art"
+            type="text"
+            value={artDirection}
+            onChange={(e) => setArtDirection(e.target.value)}
+            placeholder="e.g. warmer morning light, a few eucalyptus leaves to the side"
+            className="w-full rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-neutral-400"
+          />
+        </section>
+      )}
+
       {/* Step 3: generate */}
       <button
         type="button"
@@ -134,7 +177,7 @@ export default function Home() {
         onClick={generate}
         className="w-full rounded-xl bg-neutral-900 py-3 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-40"
       >
-        {status === "working" ? "Working — isolating & compositing…" : "Generate image"}
+        {status === "working" ? workingLabel : "Generate image"}
       </button>
 
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
@@ -168,8 +211,12 @@ export default function Home() {
             >
               Download PNG
             </a>
-            {elapsedMs != null && (
-              <span className="text-xs text-neutral-400">{(elapsedMs / 1000).toFixed(1)}s</span>
+            {meta && (
+              <span className="text-right text-xs text-neutral-400">
+                {meta.model && <span>{meta.model}</span>}
+                {meta.outputImageTokens != null && <span> · {meta.outputImageTokens} img tok</span>}
+                {meta.elapsedMs != null && <span> · {(meta.elapsedMs / 1000).toFixed(1)}s</span>}
+              </span>
             )}
           </div>
         </section>

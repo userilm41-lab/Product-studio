@@ -4,24 +4,40 @@ B2B AI product-image tool. A shop owner shoots a product on their phone; we
 return a clean, catalog-ready image. **The product itself never changes** —
 its original pixels are composited onto the new background by construction.
 
-## Status: M1 — Isolate + composite spine
+## Status: M2 — Studio-mode scene generation
 
-Upload (phone camera) → background removal (cutout) → composite onto a static
-template background → export PNG. No scene generation yet; this proves the
-fidelity core end-to-end.
+Two paths, both preserving the product by construction:
+
+- **Static templates** (M1): composite onto a solid/gradient background —
+  instant, offline, marketplace-safe.
+- **Scene templates** (M2, "AI" badge): GPT Image generates an *empty* scene
+  from an orchestrated prompt, then the original product cutout is composited
+  onto it. The model never paints the product.
+
+Pipeline: upload → isolate (cutout) → [prompt orchestration → GPT scene] →
+composite original pixels → export 2048px PNG.
 
 ## Run
 
 ```bash
 npm install        # downloads the bundled segmentation model (~148 MB)
+# Scene templates need an OpenAI key in .env.local:
+#   OPENAI_API_KEY=sk-...
+#   SCENE_MODEL=gpt-image-2   SCENE_QUALITY=medium   SCENE_SIZE=1024x1024  (optional overrides)
 npm run dev        # http://localhost:3002
 ```
 
-Server binds to **port 3002**.
+Server binds to **port 3002**. Without a key, static templates still work; scene
+templates return a 503.
 
 ## Architecture
 
-- `src/lib/engine/types.ts` — swappable `Segmenter` interface.
+- `src/lib/engine/types.ts` — swappable `Segmenter` / `SceneGenerator`
+  interfaces + normalised `ImageUsage` (for M3 cost metering).
+- `src/lib/engine/scene.ts` — GPT Image scene generator (OpenAI); model is
+  config, captures usage tokens.
+- `src/lib/engine/prompt.ts` — prompt orchestration (empty-scene guard + owner
+  art direction).
 - `src/lib/engine/segment.ts` — local ONNX background removal (offline). A
   hosted BiRefNet/RMBG-2.0 impl can drop in behind the same interface.
 - `src/lib/engine/composite.ts` — **fidelity core**: pastes the original

@@ -3,23 +3,17 @@ import type { Template } from "../templates";
 
 /**
  * The fidelity core. We never let a model repaint the product: we take the
- * ORIGINAL product cutout and paste its exact pixels onto a freshly built
- * background. In M1 the background is a static template; in later phases it
- * becomes a generated scene — but this composite step keeps the product
- * guaranteed regardless of what paints the backdrop.
+ * ORIGINAL product cutout and paste its exact pixels onto a background. The
+ * background is either a static template (M1) or a GPT-generated scene (M2) —
+ * either way the product is guaranteed, by construction.
  */
 
-function buildBackground(t: Template): Sharp {
+function buildStaticBackground(t: Template): Sharp {
   const S = t.size;
 
   if (t.background.kind === "solid") {
     return sharp({
-      create: {
-        width: S,
-        height: S,
-        channels: 4,
-        background: t.background.color,
-      },
+      create: { width: S, height: S, channels: 4, background: t.background.color },
     });
   }
 
@@ -38,8 +32,21 @@ function buildBackground(t: Template): Sharp {
   return sharp(Buffer.from(svg));
 }
 
-export async function composite(cutoutPng: Buffer, t: Template): Promise<Buffer> {
+/**
+ * Composite the product cutout onto a background.
+ * @param sceneBackground optional generated scene; if omitted the static
+ *   template background is built and used.
+ */
+export async function composite(
+  cutoutPng: Buffer,
+  t: Template,
+  sceneBackground?: Buffer,
+): Promise<Buffer> {
   const S = t.size;
+
+  const background = sceneBackground
+    ? await sharp(sceneBackground).resize(S, S, { fit: "cover", position: "centre" }).toBuffer()
+    : await buildStaticBackground(t).png().toBuffer();
 
   // Trim the transparent border so the product fills the coverage box
   // regardless of how much empty space the cutout carried.
@@ -57,9 +64,14 @@ export async function composite(cutoutPng: Buffer, t: Template): Promise<Buffer>
   const w = meta.width ?? box;
   const h = meta.height ?? box;
   const left = Math.round((S - w) / 2);
-  const top = Math.round((S - h) / 2);
 
-  return buildBackground(t)
+  // "floor": product rests near the surface line; "center": vertically centred.
+  const top =
+    t.anchor === "floor"
+      ? Math.max(Math.round(S * 0.06), Math.round(S * 0.9 - h))
+      : Math.round((S - h) / 2);
+
+  return sharp(background)
     .composite([{ input: product, left, top }])
     .png()
     .toBuffer();
