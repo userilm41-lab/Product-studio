@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { segmenter } from "@/lib/engine/segment";
 import { composite } from "@/lib/engine/composite";
 import { getSceneGenerator } from "@/lib/engine/scene";
-import { buildScenePrompt } from "@/lib/engine/prompt";
+import { buildRenderPrompt, buildScenePrompt } from "@/lib/engine/prompt";
 import { getTemplate, isSceneTemplate } from "@/lib/templates";
 import { computeCost } from "@/lib/pricing/cost";
 import { prisma } from "@/lib/db";
@@ -26,13 +26,29 @@ const QUALITY_TIERS: Record<string, { model: string; quality: string }> = {
 };
 const DEFAULT_TIER = "standard";
 
+/** The stored source photo + product row, resolved from an upload or the DB. */
+interface Source {
+  productId: string;
+  original: Buffer;
+  mime: string;
+  /** True when we re-used a stored product instead of a fresh upload. */
+  reused: boolean;
+}
+
 /**
- * generate endpoint. Isolate the product (or reuse the product's stored cutout
- * on regenerate), optionally generate a scene, composite the original product
- * onto the background, then persist the generation + assets and return the
- * true margin-free cost. Segmentation runs once per product; regenerations vary
- * only the scene, so the product can't drift (Plan §3).
- * Synchronous for now; M6 moves this behind an async job queue.
+ * generate endpoint. Two finish modes:
+ *
+ * - "ai" (default): ONE images/edits call at high input fidelity re-photographs
+ *   the product from the ORIGINAL photo into the template's setting. Isolation,
+ *   background, lighting and shadows all come out of the same render — the
+ *   ChatGPT-quality path. No local matte is involved, so no halos/ghosting.
+ * - "instant": the free offline path. Local segmentation + pixel-exact paste
+ *   (plus an empty generated scene for scene templates). Guaranteed product
+ *   pixels, lower visual quality.
+ *
+ * The original upload is stored per product, so regenerations re-render from
+ * the same source photo. Cutouts are segmented lazily, only when the instant
+ * path needs one. Synchronous for now; M6 moves this behind an async job queue.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -42,33 +58,43 @@ export async function POST(req: NextRequest) {
     const artDirection = String(form.get("prompt") ?? "").trim();
     const requestedProductId = String(form.get("productId") ?? "");
     const tier = QUALITY_TIERS[String(form.get("quality") ?? "")] ?? QUALITY_TIERS[DEFAULT_TIER];
+    const scenegen = getSceneGenerator(tier.model);
+    // AI finish is the default whenever a key is configured; "instant" opts out.
+    const finish = String(form.get("finish") ?? "") === "instant" || !scenegen ? "instant" : "ai";
 
     const template = getTemplate(templateId);
     if (!template) {
       return NextResponse.json({ error: "Unknown template." }, { status: 400 });
     }
+    const sceneMode = isSceneTemplate(template);
+    if (finish === "instant" && sceneMode && !scenegen) {
+      return NextResponse.json(
+        { error: "Scene generation is not configured (missing OPENAI_API_KEY)." },
+        { status: 503 },
+      );
+    }
 
     const started = Date.now();
 
-    // Resolve the product + its cutout: reuse a stored cutout on regenerate,
-    // else segment a fresh upload and persist the cutout for future runs.
-    let productId = "";
-    let cutout: Buffer | undefined;
-    let reusedCutout = false;
+    // ── Resolve the source photo (fresh upload or stored product) ──────────
+    let source: Source | undefined;
 
     if (requestedProductId) {
-      const cutoutAsset = await prisma.asset.findFirst({
-        where: { productId: requestedProductId, role: "cutout" },
+      const uploadAsset = await prisma.asset.findFirst({
+        where: { productId: requestedProductId, role: "upload" },
         orderBy: { createdAt: "desc" },
       });
-      if (cutoutAsset && (await storage.exists(cutoutAsset.storageKey))) {
-        cutout = await storage.get(cutoutAsset.storageKey);
-        productId = requestedProductId;
-        reusedCutout = true;
+      if (uploadAsset && (await storage.exists(uploadAsset.storageKey))) {
+        source = {
+          productId: requestedProductId,
+          original: await storage.get(uploadAsset.storageKey),
+          mime: uploadAsset.mime,
+          reused: true,
+        };
       }
     }
 
-    if (!cutout) {
+    if (!source) {
       if (!(file instanceof File)) {
         return NextResponse.json(
           { error: "No image uploaded (and no stored product to regenerate)." },
@@ -82,42 +108,70 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Image is too large (max 25 MB)." }, { status: 413 });
       }
 
-      const input = Buffer.from(await file.arrayBuffer());
-      cutout = (await segmenter.segment(input, file.type)).png;
-
+      const original = Buffer.from(await file.arrayBuffer());
       const shop = await getDefaultShop();
       const product = await prisma.product.create({ data: { shopId: shop.id } });
-      productId = product.id;
-
-      const uploadKey = await storage.put(input, { role: "upload", ext: "bin" });
-      const cutoutKey = await storage.put(cutout, { role: "cutout" });
-      await prisma.asset.createMany({
-        data: [
-          { productId, role: "upload", storageKey: uploadKey, mime: file.type },
-          { productId, role: "cutout", storageKey: cutoutKey, mime: "image/png" },
-        ],
+      const uploadKey = await storage.put(original, { role: "upload", ext: "bin" });
+      await prisma.asset.create({
+        data: { productId: product.id, role: "upload", storageKey: uploadKey, mime: file.type },
       });
+      source = { productId: product.id, original, mime: file.type, reused: false };
     }
 
-    // Generate the scene (Studio mode) if this template calls for one.
-    let scene: GeneratedScene | undefined;
-    if (isSceneTemplate(template)) {
-      const scenegen = getSceneGenerator(tier.model);
-      if (!scenegen) {
-        return NextResponse.json(
-          { error: "Scene generation is not configured (missing OPENAI_API_KEY)." },
-          { status: 503 },
-        );
+    // ── Render ──────────────────────────────────────────────────────────────
+    let final: Buffer;
+    let render: GeneratedScene | undefined; // the single AI-finish call
+    let scene: GeneratedScene | undefined; // instant path's empty scene
+    let reusedCutout = false;
+
+    if (finish === "ai" && scenegen) {
+      const { prompt } = buildRenderPrompt(template, artDirection);
+      render = await scenegen.render({
+        image: source.original,
+        mime: source.mime,
+        prompt,
+        size: SCENE_SIZE,
+        quality: tier.quality,
+      });
+      final = render.png;
+    } else {
+      // Instant path: reuse the stored cutout, else segment (lazily) and store.
+      let cutout: Buffer | undefined;
+      const cutoutAsset = await prisma.asset.findFirst({
+        where: { productId: source.productId, role: "cutout" },
+        orderBy: { createdAt: "desc" },
+      });
+      if (cutoutAsset && (await storage.exists(cutoutAsset.storageKey))) {
+        cutout = await storage.get(cutoutAsset.storageKey);
+        reusedCutout = true;
+      } else {
+        cutout = (await segmenter.segment(source.original, source.mime)).png;
+        const cutoutKey = await storage.put(cutout, { role: "cutout" });
+        await prisma.asset.create({
+          data: {
+            productId: source.productId,
+            role: "cutout",
+            storageKey: cutoutKey,
+            mime: "image/png",
+          },
+        });
       }
-      const { prompt } = buildScenePrompt(template, artDirection);
-      scene = await scenegen.generate({ prompt, size: SCENE_SIZE, quality: tier.quality });
+
+      if (sceneMode && scenegen) {
+        const { prompt } = buildScenePrompt(template, artDirection);
+        scene = await scenegen.generate({ prompt, size: SCENE_SIZE, quality: tier.quality });
+      }
+      final = await composite(cutout, template, scene?.png);
     }
 
-    const final = await composite(cutout, template, scene?.png);
     const elapsedMs = Date.now() - started;
+    const modelUsed = render?.model ?? scene?.model ?? null;
 
     const cost = computeCost({
-      scene: scene ? { model: scene.model, usage: scene.usage } : undefined,
+      images: [
+        ...(render ? [{ label: "AI render (product + scene)", ...render }] : []),
+        ...(scene ? [{ label: "Scene generation", ...scene }] : []),
+      ].map(({ label, model, usage }) => ({ label, model, usage })),
       computeSeconds: elapsedMs / 1000,
     });
 
@@ -125,16 +179,17 @@ export async function POST(req: NextRequest) {
     // per-shop usage dashboard, Plan §4/§6).
     const finalKey = await storage.put(final, { role: "final" });
     const finalAsset = await prisma.asset.create({
-      data: { productId, role: "final", storageKey: finalKey, mime: "image/png" },
+      data: { productId: source.productId, role: "final", storageKey: finalKey, mime: "image/png" },
     });
+    const mode = render ? "ai" : scene ? "studio" : "static";
     const generation = await prisma.generation.create({
       data: {
-        productId,
+        productId: source.productId,
         templateId: template.id,
         templateName: template.name,
         prompt: artDirection || null,
-        mode: scene ? "studio" : "static",
-        model: scene?.model ?? null,
+        mode,
+        model: modelUsed,
         costPennies: cost.totalGbpPence,
         costUsd: cost.totalUsd,
         elapsedMs,
@@ -146,13 +201,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       image: `data:image/png;base64,${final.toString("base64")}`,
       filename: `cadence-${template.id}.png`,
-      productId,
+      productId: source.productId,
       versionId: generation.id,
       createdAt: generation.createdAt.toISOString(),
       cost,
       meta: {
-        mode: scene ? "studio" : "static",
-        model: scene?.model ?? null,
+        mode,
+        finish,
+        model: modelUsed,
         elapsedMs,
         reusedCutout,
         templateId: template.id,

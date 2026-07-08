@@ -33,3 +33,39 @@ export function buildScenePrompt(template: Template, artDirection?: string): Sce
   const prompt = `${base} ${QUALITY_DIRECTIVE} ${EMPTY_SCENE_GUARD}${owner}`;
   return { prompt };
 }
+
+/**
+ * AI-finish prompt (image-to-image edits). The model receives the ORIGINAL
+ * photo and re-photographs the product into the target setting, so the
+ * non-negotiables flip: instead of "paint no product", we demand the product
+ * be preserved exactly while everything around it is replaced.
+ */
+const PRODUCT_PRESERVE_GUARD =
+  "Keep the product from the photo EXACTLY as it is — identical shape, proportions, colors, " +
+  "materials, buttons, artwork, labels and text. Do not restyle, redesign, clean up, or replace " +
+  "the product. Do not add any other objects, text, watermarks or logos. Remove the original " +
+  "background, surface and any straps/clutter around the product completely.";
+
+/** How the product should sit, phrased per template anchor. */
+function placement(template: Template): string {
+  return template.anchor === "floor"
+    ? "The product stands upright resting naturally on the surface with correct perspective and a soft, realistic contact shadow."
+    : "The product is centered, filling most of the frame, with a subtle soft shadow so it does not look pasted.";
+}
+
+export function buildRenderPrompt(template: Template, artDirection?: string): ScenePromptResult {
+  // Scene templates re-shoot into their scene; static templates re-shoot onto
+  // their clean backdrop (e.g. pure white for marketplaces).
+  const setting = template.scenePrompt
+    ? `Place it in this setting: ${template.scenePrompt}`
+    : `Place it on this backdrop: ${template.description} Seamless, evenly lit, edge-to-edge.`;
+
+  const owner = artDirection?.trim()
+    ? ` Additional art direction from the shop owner: ${artDirection.trim()}.`
+    : "";
+
+  const prompt =
+    `Professional e-commerce product photograph of the product in this photo. ${setting} ` +
+    `${placement(template)} ${QUALITY_DIRECTIVE} ${PRODUCT_PRESERVE_GUARD}${owner}`;
+  return { prompt };
+}
