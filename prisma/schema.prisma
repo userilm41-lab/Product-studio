@@ -1,4 +1,4 @@
-// Cadence Studio data model (M6).
+// ILM Product Studio data model (M6).
 // SQLite locally; swap `provider`/`url` to Postgres in production — the schema
 // and app code are unchanged. Multi-tenant-ready: everything hangs off Shop.
 

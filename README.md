@@ -1,4 +1,4 @@
-# Cadence Studio
+# ILM Product Studio
 
 B2B AI product-image tool. A shop owner shoots a product on their phone; we
 return a clean, catalog-ready image. **The product itself never changes** —

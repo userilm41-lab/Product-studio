@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Cadence Studio",
+  title: "ILM Product Studio",
   description: "Turn a phone photo into a professional, brand-level product image — the product itself never changes.",
 };
 

@@ -170,7 +170,7 @@ export default function Home() {
   return (
     <main className="mx-auto max-w-xl px-4 py-8">
       <header className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight">Cadence Studio</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">ILM Product Studio</h1>
         <p className="mt-1 text-sm text-neutral-500">
           Shoot your product, get a clean catalog image.{" "}
           <span className="font-medium text-neutral-700">The product never changes.</span>

@@ -1,0 +1,11 @@
+# pnpm 11 gates dependency build scripts by default. Allow the ones we need:
+# native binaries (sharp — incl. the sharp@0.32.6 that @imgly depends on;
+# onnxruntime-node) and Prisma's engines/client generation. Without this the
+# Vercel build fails at import time ("Cannot find module sharp-*.node").
+allowBuilds:
+  sharp: true
+  onnxruntime-node: true
+  prisma: true
+  "@prisma/client": true
+  "@prisma/engines": true
+  esbuild: true
