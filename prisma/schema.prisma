@@ -57,7 +57,12 @@ model Generation {
   templateId   String
   templateName String
   prompt       String?
-  mode         String // studio | static
+  // Renders run in the background (proxies 504 long requests); the client
+  // polls /api/generation/:id. Legacy rows predate this and default to done.
+  status       String   @default("done") // processing | done | error
+  error        String?
+  costJson     Json? // full CostBreakdown for the UI's cost display
+  mode         String // ai | studio | static
   model        String?
   costPennies  Int      @default(0)
   costUsd      Float    @default(0)
