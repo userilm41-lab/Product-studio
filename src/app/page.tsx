@@ -13,10 +13,11 @@ type Status = "idle" | "working" | "done" | "error";
 type Quality = "draft" | "standard" | "high";
 type Finish = "ai" | "instant";
 
+// Hints from measured renders (standard ~£0.05/45s, high ~£0.17/2min).
 const QUALITY_OPTIONS: { id: Quality; label: string; hint: string }[] = [
   { id: "draft", label: "Draft", hint: "fast · ~£0.01" },
-  { id: "standard", label: "Standard", hint: "~£0.03" },
-  { id: "high", label: "High", hint: "best · ~£0.10" },
+  { id: "standard", label: "Standard", hint: "~45s · ~£0.05" },
+  { id: "high", label: "High", hint: "best · ~2min · ~£0.17" },
 ];
 
 interface CostLine {
@@ -49,9 +50,26 @@ interface Version {
   cost: Cost;
   meta: VersionMeta;
 }
-interface GenerateResponse extends Version {
+/** Poll payload from /api/generation/:id (also the 202 shape from POST). */
+interface GenerationStatus {
+  versionId: string;
   productId: string;
+  status: "processing" | "done" | "error";
+  error?: string | null;
+  createdAt: string;
+  image?: string | null;
+  filename?: string;
+  cost?: Cost | null;
+  meta?: VersionMeta;
 }
+
+const EMPTY_COST: Cost = {
+  totalUsd: 0,
+  totalGbpPence: 0,
+  lines: [],
+  ratesAsOf: "",
+  fxGbpPerUsd: 0.79,
+};
 
 function gbp(usd: number, fx: number): string {
   const value = usd * fx;
@@ -142,18 +160,44 @@ export default function Home() {
       else if (file) body.append("image", file);
 
       const res = await fetch("/api/generate", { method: "POST", body });
-      const data = await res.json().catch(() => ({}));
+      const data = (await res.json().catch(() => ({}))) as GenerationStatus & { error?: string };
       if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
+      setProductId(data.productId);
 
-      const resp = data as GenerateResponse;
-      setProductId(resp.productId);
+      // The render runs server-side in the background (long renders outlive
+      // proxy timeouts) — poll until it lands. Transient poll failures are
+      // ignored; the render itself is unaffected by them.
+      let result: GenerationStatus = data;
+      const deadline = Date.now() + 5 * 60_000;
+      while (result.status === "processing" && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 2500));
+        try {
+          const poll = await fetch(`/api/generation/${data.versionId}`);
+          if (poll.ok) result = (await poll.json()) as GenerationStatus;
+        } catch {
+          /* transient network error — keep polling */
+        }
+      }
+      if (result.status === "error") throw new Error(result.error ?? "Generation failed.");
+      if (result.status !== "done" || !result.image) {
+        throw new Error("The render is taking unusually long — check versions in a minute.");
+      }
+
       const version: Version = {
-        versionId: resp.versionId,
-        image: resp.image,
-        filename: resp.filename,
-        createdAt: resp.createdAt,
-        cost: resp.cost,
-        meta: resp.meta,
+        versionId: result.versionId,
+        image: result.image,
+        filename: result.filename ?? "product.png",
+        createdAt: result.createdAt,
+        cost: result.cost ?? EMPTY_COST,
+        meta: result.meta ?? {
+          mode: "ai",
+          model: null,
+          elapsedMs: 0,
+          reusedCutout: false,
+          templateId,
+          templateName: "",
+          artDirection: null,
+        },
       };
       setVersions((prev) => [version, ...prev]);
       setSelectedId(version.versionId);

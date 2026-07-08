@@ -1,17 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
+import { after } from "next/server";
 import { segmenter } from "@/lib/engine/segment";
 import { composite } from "@/lib/engine/composite";
 import { getSceneGenerator } from "@/lib/engine/scene";
 import { buildRenderPrompt, buildScenePrompt } from "@/lib/engine/prompt";
-import { getTemplate, isSceneTemplate } from "@/lib/templates";
+import { getTemplate, isSceneTemplate, type Template } from "@/lib/templates";
 import { computeCost } from "@/lib/pricing/cost";
 import { prisma } from "@/lib/db";
 import { storage } from "@/lib/storage";
 import { getDefaultShop } from "@/lib/tenant";
-import type { GeneratedScene } from "@/lib/engine/types";
+import type { GeneratedScene, SceneGenerator } from "@/lib/engine/types";
 
 export const runtime = "nodejs";
-export const maxDuration = 120;
+// Background render budget (after() runs within the function lifetime on
+// serverless). High-quality edits at input_fidelity=high can exceed 2 minutes.
+export const maxDuration = 300;
 
 const MAX_BYTES = 25 * 1024 * 1024; // 25 MB phone photo ceiling
 const SCENE_SIZE = process.env.SCENE_SIZE ?? "1024x1024";
@@ -31,24 +34,31 @@ interface Source {
   productId: string;
   original: Buffer;
   mime: string;
-  /** True when we re-used a stored product instead of a fresh upload. */
-  reused: boolean;
+}
+
+interface Job {
+  generationId: string;
+  source: Source;
+  template: Template;
+  artDirection: string;
+  tier: { model: string; quality: string };
+  finish: "ai" | "instant";
+  scenegen: SceneGenerator | null;
+  started: number;
 }
 
 /**
- * generate endpoint. Two finish modes:
+ * generate endpoint — async job pattern. Renders (especially High tier) can
+ * outlive proxy/gateway timeouts, so POST validates, stores the source,
+ * creates a `processing` Generation row and returns immediately; the render
+ * runs in the background (after()) and the client polls /api/generation/:id.
  *
+ * Two finish modes:
  * - "ai" (default): ONE images/edits call at high input fidelity re-photographs
- *   the product from the ORIGINAL photo into the template's setting. Isolation,
- *   background, lighting and shadows all come out of the same render — the
- *   ChatGPT-quality path. No local matte is involved, so no halos/ghosting.
- * - "instant": the free offline path. Local segmentation + pixel-exact paste
- *   (plus an empty generated scene for scene templates). Guaranteed product
- *   pixels, lower visual quality.
- *
- * The original upload is stored per product, so regenerations re-render from
- * the same source photo. Cutouts are segmented lazily, only when the instant
- * path needs one. Synchronous for now; M6 moves this behind an async job queue.
+ *   the product from the ORIGINAL photo into the template's setting — the
+ *   ChatGPT-quality path. No local matte, so no halos/ghosting.
+ * - "instant": free offline path. Local segmentation + pixel-exact paste (plus
+ *   an empty generated scene for scene templates).
  */
 export async function POST(req: NextRequest) {
   try {
@@ -89,7 +99,6 @@ export async function POST(req: NextRequest) {
           productId: requestedProductId,
           original: await storage.get(uploadAsset.storageKey),
           mime: uploadAsset.mime,
-          reused: true,
         };
       }
     }
@@ -115,10 +124,55 @@ export async function POST(req: NextRequest) {
       await prisma.asset.create({
         data: { productId: product.id, role: "upload", storageKey: uploadKey, mime: file.type },
       });
-      source = { productId: product.id, original, mime: file.type, reused: false };
+      source = { productId: product.id, original, mime: file.type };
     }
 
-    // ── Render ──────────────────────────────────────────────────────────────
+    // ── Enqueue: row now, render in the background, client polls ───────────
+    const mode = finish === "ai" ? "ai" : sceneMode ? "studio" : "static";
+    const generation = await prisma.generation.create({
+      data: {
+        productId: source.productId,
+        templateId: template.id,
+        templateName: template.name,
+        prompt: artDirection || null,
+        status: "processing",
+        mode,
+      },
+    });
+
+    const job: Job = {
+      generationId: generation.id,
+      source,
+      template,
+      artDirection,
+      tier,
+      finish,
+      scenegen,
+      started,
+    };
+    after(() => runGeneration(job));
+
+    return NextResponse.json(
+      {
+        versionId: generation.id,
+        productId: source.productId,
+        status: "processing",
+        createdAt: generation.createdAt.toISOString(),
+      },
+      { status: 202 },
+    );
+  } catch (err) {
+    console.error("[generate] failed", err);
+    const message = err instanceof Error ? err.message : "Generation failed.";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
+/** The actual render. Runs detached from the HTTP request; all outcomes —
+ *  success or failure — land on the Generation row for the poller. */
+async function runGeneration(job: Job): Promise<void> {
+  const { generationId, source, template, artDirection, tier, finish, scenegen } = job;
+  try {
     let final: Buffer;
     let render: GeneratedScene | undefined; // the single AI-finish call
     let scene: GeneratedScene | undefined; // instant path's empty scene
@@ -157,16 +211,14 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      if (sceneMode && scenegen) {
+      if (isSceneTemplate(template) && scenegen) {
         const { prompt } = buildScenePrompt(template, artDirection);
         scene = await scenegen.generate({ prompt, size: SCENE_SIZE, quality: tier.quality });
       }
       final = await composite(cutout, template, scene?.png);
     }
 
-    const elapsedMs = Date.now() - started;
-    const modelUsed = render?.model ?? scene?.model ?? null;
-
+    const elapsedMs = Date.now() - job.started;
     const cost = computeCost({
       images: [
         ...(render ? [{ label: "AI render (product + scene)", ...render }] : []),
@@ -175,50 +227,32 @@ export async function POST(req: NextRequest) {
       computeSeconds: elapsedMs / 1000,
     });
 
-    // Persist the final asset + the generation record (cost_pennies for the
-    // per-shop usage dashboard, Plan §4/§6).
     const finalKey = await storage.put(final, { role: "final" });
     const finalAsset = await prisma.asset.create({
       data: { productId: source.productId, role: "final", storageKey: finalKey, mime: "image/png" },
     });
-    const mode = render ? "ai" : scene ? "studio" : "static";
-    const generation = await prisma.generation.create({
+
+    await prisma.generation.update({
+      where: { id: generationId },
       data: {
-        productId: source.productId,
-        templateId: template.id,
-        templateName: template.name,
-        prompt: artDirection || null,
-        mode,
-        model: modelUsed,
+        status: "done",
+        model: render?.model ?? scene?.model ?? null,
         costPennies: cost.totalGbpPence,
         costUsd: cost.totalUsd,
+        costJson: JSON.parse(JSON.stringify(cost)),
         elapsedMs,
         reusedCutout,
         finalAssetId: finalAsset.id,
       },
     });
-
-    return NextResponse.json({
-      image: `data:image/png;base64,${final.toString("base64")}`,
-      filename: `cadence-${template.id}.png`,
-      productId: source.productId,
-      versionId: generation.id,
-      createdAt: generation.createdAt.toISOString(),
-      cost,
-      meta: {
-        mode,
-        finish,
-        model: modelUsed,
-        elapsedMs,
-        reusedCutout,
-        templateId: template.id,
-        templateName: template.name,
-        artDirection: artDirection || null,
-      },
-    });
   } catch (err) {
-    console.error("[generate] failed", err);
+    console.error("[generate] background render failed", err);
     const message = err instanceof Error ? err.message : "Generation failed.";
-    return NextResponse.json({ error: message }, { status: 500 });
+    await prisma.generation
+      .update({
+        where: { id: generationId },
+        data: { status: "error", error: message.slice(0, 500) },
+      })
+      .catch(() => {});
   }
 }
