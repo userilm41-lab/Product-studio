@@ -1,4 +1,4 @@
-import sharp, { type Sharp } from "sharp";
+import sharp, { type Sharp, type OverlayOptions } from "sharp";
 import type { Template } from "../templates";
 
 /**
@@ -71,8 +71,36 @@ export async function composite(
       ? Math.max(Math.round(S * 0.06), Math.round(S * 0.9 - h))
       : Math.round((S - h) / 2);
 
-  return sharp(background)
-    .composite([{ input: product, left, top }])
-    .png()
-    .toBuffer();
+  const layers: OverlayOptions[] = [];
+
+  // Grounding: a soft contact shadow under floor-anchored products so they sit
+  // on the surface instead of floating. This never touches the product pixels —
+  // it's drawn on the background, beneath the product (Plan §8 "ground").
+  if (t.anchor === "floor") {
+    const shadow = await buildContactShadow(w);
+    const shadowLeft = Math.round((S - shadow.width) / 2);
+    const shadowTop = Math.min(
+      S - shadow.height,
+      Math.max(0, Math.round(top + h - shadow.height * 0.55)),
+    );
+    layers.push({ input: shadow.png, left: shadowLeft, top: shadowTop });
+  }
+
+  layers.push({ input: product, left, top });
+
+  return sharp(background).composite(layers).png().toBuffer();
+}
+
+/** A blurred, semi-transparent ellipse used as a contact shadow. */
+async function buildContactShadow(
+  productWidth: number,
+): Promise<{ png: Buffer; width: number; height: number }> {
+  const width = Math.round(productWidth * 1.02);
+  const height = Math.max(16, Math.round(productWidth * 0.16));
+  const svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="${width / 2}" cy="${height / 2}" rx="${width / 2 - 2}" ry="${height / 2 - 2}" fill="rgba(0,0,0,0.40)"/>
+</svg>`;
+  const sigma = Math.max(4, Math.round(height * 0.45));
+  const png = await sharp(Buffer.from(svg)).blur(sigma).png().toBuffer();
+  return { png, width, height };
 }

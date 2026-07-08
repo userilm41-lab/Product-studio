@@ -4,7 +4,18 @@ B2B AI product-image tool. A shop owner shoots a product on their phone; we
 return a clean, catalog-ready image. **The product itself never changes** —
 its original pixels are composited onto the new background by construction.
 
-## Status: M4 — Regenerate + version history
+## Status: M5 (in progress) — Grounding shadow
+
+Floor-anchored scenes now get a soft contact shadow under the product so it
+sits on the surface instead of floating (drawn on the background, beneath the
+product — never touches product pixels).
+
+Deferred (need GPU / hosted compute, not available in this env): IC-Light
+**relight** and **frequency-separation detail-restore**. The **fidelity guard**
+(SSIM/embedding) lands with Fast mode in M7, where it actually catches drift —
+in Studio mode the product is identical by construction (proven in M4).
+
+## Earlier: M4 — Regenerate + version history
 
 The product is segmented once and the cutout cached by `productId`; regenerate
 re-runs only the scene, so it's ~7× faster (skips segmentation) and the product
