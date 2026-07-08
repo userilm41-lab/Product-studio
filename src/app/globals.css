@@ -7,5 +7,7 @@
 }
 
 body {
-  @apply bg-neutral-50 text-neutral-900 antialiased;
+  /* Warm paper white — softer than pure neutral, reads premium in light mode. */
+  background: #f7f6f4;
+  @apply text-neutral-900 antialiased;
 }
